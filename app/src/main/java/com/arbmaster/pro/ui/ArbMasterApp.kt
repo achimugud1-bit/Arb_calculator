@@ -65,21 +65,16 @@ fun ArbMasterApp(repo: ArbRepository) {
     val context = LocalContext.current
     var currentTab by remember { mutableStateOf(AppTab.CALC) }
 
-    // Shared calculator state so Live Arb Search can hand off directly into staking
+    // Always start completely empty until user enters their personal order
     var modeCount by remember { mutableIntStateOf(2) }
-    var budget by remember { mutableStateOf("10000") }
+    var budget by remember { mutableStateOf("") }
     var currency by remember { mutableStateOf("NGN") }
     var eventLabel by remember { mutableStateOf("") }
     var legInputs by remember {
         mutableStateOf(
-            listOf(
-                ArbMath.LegInput(odds = "2.15", name = "Outcome A", book = "SportyBet"),
-                ArbMath.LegInput(odds = "2.05", name = "Outcome B", book = "Bet9ja"),
-                ArbMath.LegInput(odds = "3.60", name = "Draw", book = "Bet365"),
-                ArbMath.LegInput(odds = "", name = "Outcome D"),
-                ArbMath.LegInput(odds = "", name = "Outcome E"),
-                ArbMath.LegInput(odds = "", name = "Outcome F")
-            )
+            List(6) {
+                ArbMath.LegInput(odds = "", name = "", book = "")
+            }
         )
     }
 
@@ -174,7 +169,7 @@ fun ArbMasterApp(repo: ArbRepository) {
                                 if (src != null) {
                                     ArbMath.LegInput(odds = src.odds, name = src.name, book = src.book)
                                 } else {
-                                    ArbMath.LegInput(odds = "", name = "Outcome ${'A' + idx}")
+                                    ArbMath.LegInput(odds = "", name = "", book = "")
                                 }
                             }
                             currentTab = AppTab.CALC
@@ -211,8 +206,9 @@ private fun CalculatorTab(
     onCopy: (String) -> Unit
 ) {
     val activeLegs = legs.take(modeCount)
+    val allEmpty = budget.isBlank() && activeLegs.all { it.odds.isBlank() }
     val calcResult = remember(budget, activeLegs) {
-        runCatching { ArbMath.arbitrate(budgetStr = budget, rows = activeLegs) }
+        if (allEmpty) null else runCatching { ArbMath.arbitrate(budgetStr = budget, rows = activeLegs) }
     }
 
     LazyColumn(
@@ -240,9 +236,21 @@ private fun CalculatorTab(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val res = calcResult.getOrNull()
-                    val err = calcResult.exceptionOrNull()
-                    if (res != null) {
+                    val res = calcResult?.getOrNull()
+                    val err = calcResult?.exceptionOrNull()
+                    if (allEmpty) {
+                        Text(
+                            text = "Ready for Your Order",
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Enter your SportyBet and Bet9ja decimal odds and budget below to calculate exact stakes.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    } else if (res != null) {
                         val isPositive = res.worstProfit > BigInteger.ZERO
                         val tone = if (isPositive) Emerald else Crimson
                         Text(
@@ -269,7 +277,7 @@ private fun CalculatorTab(
                         }
                     } else {
                         Text(
-                            text = err?.message ?: "Enter decimal odds > 1.00 to calculate stakes.",
+                            text = err?.message ?: "Enter decimal odds > 1.00 and budget to calculate stakes.",
                             color = Amber,
                             fontSize = 13.sp
                         )
@@ -340,7 +348,7 @@ private fun CalculatorTab(
         // Outcome Leg Inputs + Calculated Whole Stakes
         items(modeCount) { idx ->
             val row = legs[idx]
-            val legRes = calcResult.getOrNull()?.legs?.getOrNull(idx)
+            val legRes = calcResult?.getOrNull()?.legs?.getOrNull(idx)
             val stakeWhole = legRes?.let { ArbMath.formatFixed(it.stake, 0) } ?: "—"
 
             Surface(
@@ -371,10 +379,30 @@ private fun CalculatorTab(
                         }
                     }
 
+                    // Bookmaker selector restricted strictly to SportyBet & Bet9ja
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("SportyBet", "Bet9ja").forEach { bk ->
+                            val selected = row.book == bk
+                            OutlinedButton(
+                                onClick = { onLegChange(idx, row.copy(book = if (selected) "" else bk)) },
+                                modifier = Modifier.weight(1f).height(38.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) ElevatedBg else Color.Transparent,
+                                    contentColor = if (selected) Emerald else TextMuted
+                                ),
+                                border = BorderStroke(1.dp, if (selected) Emerald else BorderCol),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(bk, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = row.odds,
-                            onValueChange = { onLegChange(idx, row.odds.let { _ -> row.copy(odds = it) }) },
+                            onValueChange = { onLegChange(idx, row.copy(odds = it)) },
                             label = { Text("Decimal Odds") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true,
@@ -417,10 +445,9 @@ private fun LiveArbTab(
     val scope = rememberCoroutineScope()
     var sport by remember { mutableStateOf("Football") }
     var query by remember { mutableStateOf("") }
-    var bookmakers by remember { mutableStateOf("SportyBet, Bet9ja, Bet365, 1xBet, Pinnacle") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var notice by remember { mutableStateOf("Tap Scan Upcoming Games to find real pre-match odds and verified stake splits.") }
+    var notice by remember { mutableStateOf("Tap Scan Upcoming Games to find real SportyBet vs Bet9ja matches.") }
     var results by remember { mutableStateOf<List<LiveOpportunityItem>>(emptyList()) }
 
     fun triggerScan() {
@@ -432,12 +459,12 @@ private fun LiveArbTab(
                     sport = sport,
                     market = "any",
                     query = query,
-                    bookmakers = bookmakers,
+                    bookmakers = "SportyBet, Bet9ja",
                     engine = "web"
                 )
             }.onSuccess { res ->
                 results = res.opportunities
-                notice = res.notice.ifBlank { "Found ${res.opportunities.size} upcoming fixtures." }
+                notice = res.notice.ifBlank { "Found ${res.opportunities.size} SportyBet vs Bet9ja upcoming fixtures." }
             }.onFailure { ex ->
                 error = ex.message ?: "Live scan failed."
             }
@@ -458,7 +485,7 @@ private fun LiveArbTab(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Live Upcoming Arbitrage Search", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("Live Upcoming Arb Search · SportyBet & Bet9ja", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("all", "Football", "Basketball", "Tennis").forEach { sp ->
                             val active = sport == sp
@@ -479,16 +506,15 @@ private fun LiveArbTab(
                         value = query,
                         onValueChange = { query = it },
                         label = { Text("League or Team (optional)") },
-                        placeholder = { Text("e.g. Premier League, Champions League, NBA") },
+                        placeholder = { Text("e.g. Premier League, Champions League, La Liga") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = bookmakers,
-                        onValueChange = { bookmakers = it },
-                        label = { Text("Bookmakers to Compare") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                    Text(
+                        text = "Bookmakers: SportyBet & Bet9ja only",
+                        color = Emerald,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                     Button(
                         onClick = { triggerScan() },
@@ -500,7 +526,7 @@ private fun LiveArbTab(
                         if (loading) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF04140E))
                             Spacer(Modifier.width(8.dp))
-                            Text("Scanning Upcoming Matches...", fontWeight = FontWeight.Bold)
+                            Text("Scanning SportyBet & Bet9ja...", fontWeight = FontWeight.Bold)
                         } else {
                             Text("Scan Upcoming Games Now", fontWeight = FontWeight.Bold)
                         }
@@ -609,7 +635,7 @@ private fun BetTrackerTab(repo: ArbRepository) {
     var bets by remember { mutableStateOf(repo.loadBets()) }
     var event by remember { mutableStateOf("") }
     var selection by remember { mutableStateOf("") }
-    var book by remember { mutableStateOf("SportyBet") }
+    var book by remember { mutableStateOf("") }
     var odds by remember { mutableStateOf("") }
     var stake by remember { mutableStateOf("") }
 
@@ -628,9 +654,23 @@ private fun BetTrackerTab(repo: ArbRepository) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Log New Bet", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     OutlinedTextField(value = event, onValueChange = { event = it }, label = { Text("Event") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = selection, onValueChange = { selection = it }, label = { Text("Pick") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = selection, onValueChange = { selection = it }, label = { Text("Pick") }, singleLine = true, modifier = Modifier.weight(1f))
-                        OutlinedTextField(value = book, onValueChange = { book = it }, label = { Text("Book") }, singleLine = true, modifier = Modifier.weight(1f))
+                        listOf("SportyBet", "Bet9ja").forEach { bk ->
+                            val selected = book == bk
+                            OutlinedButton(
+                                onClick = { book = if (selected) "" else bk },
+                                modifier = Modifier.weight(1f).height(42.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) ElevatedBg else Color.Transparent,
+                                    contentColor = if (selected) Emerald else TextMuted
+                                ),
+                                border = BorderStroke(1.dp, if (selected) Emerald else BorderCol),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(bk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = odds, onValueChange = { odds = it }, label = { Text("Odds") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f))
@@ -644,7 +684,7 @@ private fun BetTrackerTab(repo: ArbRepository) {
                                 ) + bets
                                 bets = next
                                 repo.saveBets(next)
-                                event = ""; selection = ""; odds = ""; stake = ""
+                                event = ""; selection = ""; book = ""; odds = ""; stake = ""
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(44.dp),
